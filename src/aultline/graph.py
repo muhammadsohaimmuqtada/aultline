@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from aultline.models import GraphEdge, GraphNode
 
