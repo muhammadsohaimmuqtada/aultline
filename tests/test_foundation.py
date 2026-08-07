@@ -33,6 +33,14 @@ DEDSEC_FIXTURE = {
                 "tenant": "tenant-a",
                 "authenticated": True,
             },
+            {
+                "id": "identity-user-b",
+                "label": "user-b",
+                "kind": "cookie",
+                "role": "user",
+                "tenant": "tenant-b",
+                "authenticated": True,
+            },
         ],
         "requests": [
             {
@@ -99,7 +107,7 @@ class FoundationTests(unittest.TestCase):
     def test_dedsec_import_builds_shared_graph(self):
         self.assertEqual(self.imported.schema_version, "3.0")
         self.assertGreaterEqual(len(self.graph.by_kind("endpoint")), 2)
-        self.assertEqual(len(self.graph.by_kind("identity")), 2)
+        self.assertEqual(len(self.graph.by_kind("identity")), 3)
         self.assertEqual(len(self.graph.by_kind("historical-diff")), 1)
 
     def test_four_pillars_generate_conservative_hypotheses(self):
@@ -129,8 +137,11 @@ class FoundationTests(unittest.TestCase):
         )
         plan = TestPlanner().build(hypothesis, self.graph)
         self.assertTrue(plan.requires_multiple_identities)
+        self.assertFalse(plan.missing_prerequisites)
         self.assertEqual(plan.maximum_impact, Impact.ACTIVE_SAFE)
         self.assertLessEqual(plan.request_budget, 4)
+        identities = {step.identity_id for step in plan.steps}
+        self.assertEqual(identities, {"identity-user-a", "identity-user-b"})
 
     def test_policy_requires_declared_scope(self):
         hypothesis = next(
