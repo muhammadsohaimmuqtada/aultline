@@ -9,6 +9,10 @@ from urllib.parse import parse_qsl, urlsplit
 from aultline.graph import ApplicationGraph, stable_id
 
 
+class DedsecImportError(ValueError):
+    """Raised when a DEDSEC report cannot be safely loaded or interpreted."""
+
+
 @dataclass(frozen=True)
 class DedsecImportResult:
     graph: ApplicationGraph
@@ -51,8 +55,25 @@ class DedsecImporter:
 
     def load(self, path: str | Path) -> DedsecImportResult:
         source = Path(path).expanduser().resolve()
-        with source.open("r", encoding="utf-8") as handle:
-            report = json.load(handle)
+        if not source.exists():
+            raise DedsecImportError(f"report not found: {source}")
+        if not source.is_file():
+            raise DedsecImportError(f"report path is not a file: {source}")
+
+        try:
+            with source.open("r", encoding="utf-8") as handle:
+                report = json.load(handle)
+        except json.JSONDecodeError as exc:
+            raise DedsecImportError(
+                f"invalid JSON report: {source} (line {exc.lineno}, column {exc.colno})"
+            ) from None
+        except UnicodeDecodeError:
+            raise DedsecImportError(f"report is not valid UTF-8 JSON: {source}") from None
+        except OSError as exc:
+            raise DedsecImportError(f"unable to read report: {source}: {exc}") from None
+
+        if not isinstance(report, dict):
+            raise DedsecImportError(f"report root must be a JSON object: {source}")
         return self.ingest(report, source_path=str(source))
 
     def ingest(self, report: dict[str, Any], *, source_path: str = "<memory>") -> DedsecImportResult:

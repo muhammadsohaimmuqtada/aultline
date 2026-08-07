@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from aultline import __version__
 from aultline.analysis import AnalysisEngine
-from aultline.importers import DedsecImporter
+from aultline.importers import DedsecImporter, DedsecImportError
 from aultline.planner import TestPlanner
 from aultline.policy import ExecutionPolicy
 from aultline.priority import PriorityEngine
@@ -108,10 +109,14 @@ def _graph(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "analyze":
-        return _analyze(args)
-    if args.command == "graph":
-        return _graph(args)
+    try:
+        if args.command == "analyze":
+            return _analyze(args)
+        if args.command == "graph":
+            return _graph(args)
+    except DedsecImportError as exc:
+        print(f"aultline: error: {exc}", file=sys.stderr)
+        return 2
     parser.error("unknown command")
     return 2
 

@@ -53,18 +53,25 @@ aultline --version
 
 ## Import a DEDSEC report
 
+Use the path to an actual DEDSEC schema-3 JSON report. Paths such as `/path/to/dedsec-report.json` in documentation are placeholders and must be replaced.
+
 ```bash
-aultline graph /path/to/dedsec-report.json --output graph.json
-aultline analyze /path/to/dedsec-report.json --output analysis.json
+REPORT=/absolute/path/to/dedsec-report.json
+
+test -f "$REPORT"
+aultline graph "$REPORT" --output graph.json
+aultline analyze "$REPORT" --output analysis.json
 ```
 
 If the operator has explicitly declared authorized scope for subsequent validation planning:
 
 ```bash
-aultline analyze /path/to/dedsec-report.json --scope-declared
+aultline analyze "$REPORT" --scope-declared
 ```
 
 `--scope-declared` does not execute traffic. It only allows eligible generated plans to pass the current policy evaluation.
+
+Invalid, missing, unreadable, or malformed report inputs are rejected with a concise CLI error and a non-zero exit status.
 
 ## Design principles
 
