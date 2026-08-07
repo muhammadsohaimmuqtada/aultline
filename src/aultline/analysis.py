@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable
+from collections.abc import Iterable
 
 from aultline.graph import ApplicationGraph, stable_id
 from aultline.models import EvidenceRef, Hypothesis, Pillar
