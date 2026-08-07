@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aultline.graph import ApplicationGraph, stable_id
-from aultline.models import Hypothesis, Impact, Pillar, TestPlan, TestStep
+from aultline.models import GraphNode, Hypothesis, Impact, Pillar, TestPlan, TestStep
 
 
 class TestPlanner:
@@ -14,9 +14,9 @@ class TestPlanner:
     def build(self, hypothesis: Hypothesis, graph: ApplicationGraph) -> TestPlan:
         target = graph.nodes[hypothesis.target_node_id]
         if hypothesis.pillar is Pillar.AUTHORIZATION:
-            return self._authorization(hypothesis, target.key)
+            return self._authorization(hypothesis, target.key, graph)
         if hypothesis.pillar is Pillar.AUTHENTICATION:
-            return self._authentication(hypothesis, target.key)
+            return self._authentication(hypothesis, target, graph)
         if hypothesis.pillar is Pillar.API_OBJECT:
             return self._api_object(hypothesis, target.key)
         if hypothesis.pillar is Pillar.WORKFLOW:
@@ -24,13 +24,31 @@ class TestPlanner:
         raise ValueError(f"unsupported pillar: {hypothesis.pillar}")
 
     @staticmethod
-    def _authorization(hypothesis: Hypothesis, target: str) -> TestPlan:
+    def _authorization(
+        hypothesis: Hypothesis,
+        target: str,
+        graph: ApplicationGraph,
+    ) -> TestPlan:
+        authenticated = sorted(
+            (
+                node
+                for node in graph.by_kind("identity")
+                if bool(node.attributes.get("authenticated"))
+            ),
+            key=lambda node: node.key,
+        )
+        missing: list[str] = []
+        if len(authenticated) < 2:
+            missing.append("two authenticated authorized test identities")
+
+        owner_id = authenticated[0].key if authenticated else None
+        peer_id = authenticated[1].key if len(authenticated) > 1 else None
         steps = (
             TestStep(
                 id="control-owner",
                 action="replay-owned-object-control",
                 target=target,
-                identity_id="identity-a",
+                identity_id=owner_id,
                 impact=Impact.ACTIVE_SAFE,
                 expected_signal="identity A can access an object owned by identity A",
             ),
@@ -38,7 +56,7 @@ class TestPlanner:
                 id="differential-peer",
                 action="compare-peer-access-to-researcher-owned-object",
                 target=target,
-                identity_id="identity-b",
+                identity_id=peer_id,
                 impact=Impact.ACTIVE_SAFE,
                 expected_signal="authorization result differs for the non-owner identity",
                 notes="Use only researcher-controlled test objects and authorized identities.",
@@ -52,10 +70,39 @@ class TestPlanner:
             maximum_impact=Impact.ACTIVE_SAFE,
             request_budget=4,
             requires_multiple_identities=True,
+            prerequisites=(
+                "two authenticated authorized test identities",
+                "a researcher-controlled object with known ownership",
+            ),
+            missing_prerequisites=tuple(missing),
         )
 
     @staticmethod
-    def _authentication(hypothesis: Hypothesis, target: str) -> TestPlan:
+    def _authentication(
+        hypothesis: Hypothesis,
+        target: GraphNode,
+        graph: ApplicationGraph,
+    ) -> TestPlan:
+        mapped_identity_nodes: list[GraphNode] = []
+        for edge in graph.incoming(target.id, "observed_endpoint"):
+            node = graph.nodes.get(edge.source_id)
+            if node and node.kind == "identity":
+                mapped_identity_nodes.append(node)
+
+        anonymous = sorted(
+            (node for node in mapped_identity_nodes if not bool(node.attributes.get("authenticated"))),
+            key=lambda node: node.key,
+        )
+        authenticated = sorted(
+            (node for node in mapped_identity_nodes if bool(node.attributes.get("authenticated"))),
+            key=lambda node: node.key,
+        )
+        missing: list[str] = []
+        if not anonymous:
+            missing.append("an anonymous identity observation for the target endpoint")
+        if not authenticated:
+            missing.append("an authenticated identity observation for the target endpoint")
+
         return TestPlan(
             id=stable_id("plan", {"hypothesis": hypothesis.id, "kind": "authentication"}),
             hypothesis_id=hypothesis.id,
@@ -64,16 +111,16 @@ class TestPlanner:
                 TestStep(
                     id="anonymous-control",
                     action="observe-anonymous-response",
-                    target=target,
-                    identity_id="identity-anonymous",
+                    target=target.key,
+                    identity_id=anonymous[0].key if anonymous else None,
                     impact=Impact.ACTIVE_SAFE,
                     expected_signal="baseline status/body metadata for anonymous identity",
                 ),
                 TestStep(
                     id="authenticated-control",
                     action="observe-authenticated-response",
-                    target=target,
-                    identity_id="identity-authenticated",
+                    target=target.key,
+                    identity_id=authenticated[0].key if authenticated else None,
                     impact=Impact.ACTIVE_SAFE,
                     expected_signal="comparable status/body metadata for authenticated identity",
                 ),
@@ -81,6 +128,10 @@ class TestPlanner:
             maximum_impact=Impact.ACTIVE_SAFE,
             request_budget=4,
             requires_multiple_identities=True,
+            prerequisites=(
+                "anonymous and authenticated observations for the same endpoint",
+            ),
+            missing_prerequisites=tuple(missing),
         )
 
     @staticmethod
