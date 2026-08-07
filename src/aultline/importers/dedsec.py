@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 from aultline.graph import ApplicationGraph, stable_id
 
@@ -22,23 +23,91 @@ class DedsecImportResult:
     source_path: str
 
 
-def _endpoint_key(method: str, url: str) -> str:
+_STATIC_EXTENSIONS = {
+    ".avif",
+    ".bmp",
+    ".css",
+    ".eot",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".map",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".pdf",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+_HEX_ID_RE = re.compile(r"^[0-9a-fA-F]{12,64}$")
+_ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$", re.IGNORECASE)
+_HTTP_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+
+
+def _canonical_url(url: str) -> str:
     parsed = urlsplit(url)
-    return f"{method.upper()} {parsed.path or '/'}"
+    path = parsed.path or "/"
+    if parsed.scheme and parsed.netloc:
+        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, "", ""))
+    return path
+
+
+def _endpoint_key(method: str, url: str) -> str:
+    return f"{method.upper()} {_canonical_url(url)}"
+
+
+def _split_endpoint_asset(key: str, attributes: dict[str, Any]) -> tuple[str, str] | None:
+    raw = key.strip()
+    if not raw:
+        return None
+    parts = raw.split(None, 1)
+    if len(parts) == 2 and parts[0].upper() in _HTTP_METHODS:
+        return parts[0].upper(), parts[1]
+    method = str(attributes.get("method") or "").upper()
+    url = str(attributes.get("url") or "")
+    if method in _HTTP_METHODS and url:
+        return method, url
+    return None
+
+
+def _is_static_resource(url: str) -> bool:
+    path = unquote(urlsplit(url).path).lower().rstrip("/")
+    if not path or "." not in path.rsplit("/", 1)[-1]:
+        return False
+    suffix = "." + path.rsplit(".", 1)[-1]
+    return suffix in _STATIC_EXTENSIONS
 
 
 def _object_tokens(url: str) -> list[str]:
+    """Return high-signal object references without treating ordinary slugs/files as IDs."""
+
+    if _is_static_resource(url):
+        return []
+
     parsed = urlsplit(url)
     tokens: list[str] = []
     for segment in parsed.path.split("/"):
-        value = segment.strip()
+        value = unquote(segment).strip()
         if not value:
             continue
-        if value.isdigit() or (len(value) >= 8 and any(ch.isdigit() for ch in value)):
+        if value.isdigit() or _UUID_RE.fullmatch(value) or _HEX_ID_RE.fullmatch(value) or _ULID_RE.fullmatch(value):
             tokens.append(value)
+
     for name, value in parse_qsl(parsed.query, keep_blank_values=True):
         lower = name.lower()
-        if lower == "id" or lower.endswith("_id") or lower.endswith("id"):
+        if not value:
+            continue
+        if lower == "id" or lower.endswith("_id") or lower.endswith("-id") or lower.endswith("id"):
             tokens.append(f"{name}={value}")
     return tokens
 
@@ -101,10 +170,29 @@ class DedsecImporter:
             if not isinstance(asset, dict):
                 continue
             old_id = str(asset.get("id") or "")
+            kind = str(asset.get("kind") or "asset").strip().lower()
+            key = str(asset.get("key") or old_id or "unknown")
+            attributes = dict(asset.get("attributes") or {})
+
+            if kind == "endpoint":
+                endpoint_parts = _split_endpoint_asset(key, attributes)
+                if endpoint_parts:
+                    method, url = endpoint_parts
+                    key = _endpoint_key(method, url)
+                    attributes.update(
+                        {
+                            "method": method,
+                            "url": _canonical_url(url),
+                            "path": urlsplit(url).path or "/",
+                            "object_tokens": _object_tokens(url),
+                            "static_resource": _is_static_resource(url),
+                        }
+                    )
+
             node = graph.upsert_node(
-                str(asset.get("kind") or "asset"),
-                str(asset.get("key") or old_id or "unknown"),
-                attributes=dict(asset.get("attributes") or {}),
+                kind,
+                key,
+                attributes=attributes,
                 sources=tuple(asset.get("sources") or ("dedsec:asset",)),
             )
             if old_id:
@@ -136,6 +224,7 @@ class DedsecImporter:
             url = str(request.get("url") or "")
             request_id = str(request.get("id") or stable_id("request", {"method": method, "url": url}))
             insertion_points = list(request.get("insertion_points") or [])
+            object_tokens = _object_tokens(url)
             request_node = graph.upsert_node(
                 "request",
                 request_id,
@@ -146,19 +235,22 @@ class DedsecImporter:
                     "tags": list(request.get("tags") or []),
                     "metadata": dict(request.get("metadata") or {}),
                     "insertion_points": insertion_points,
-                    "object_tokens": _object_tokens(url),
+                    "object_tokens": object_tokens,
+                    "static_resource": _is_static_resource(url),
                 },
                 sources=(f"dedsec:request:{request.get('source') or 'unknown'}",),
             )
+            id_map[request_id] = request_node.id
             endpoint = graph.upsert_node(
                 "endpoint",
                 _endpoint_key(method, url),
                 attributes={
                     "method": method,
-                    "url": url,
+                    "url": _canonical_url(url),
                     "path": urlsplit(url).path or "/",
                     "query_parameters": sorted({name for name, _ in parse_qsl(urlsplit(url).query)}),
-                    "object_tokens": _object_tokens(url),
+                    "object_tokens": object_tokens,
+                    "static_resource": _is_static_resource(url),
                 },
                 sources=("dedsec:request",),
             )
@@ -206,10 +298,9 @@ class DedsecImporter:
             )
             graph.link(target_node.id, obs_node.id, "has_observation")
             request_id = str(observation.get("request_id") or "")
-            if request_id:
-                request_node = next((n for n in graph.by_kind("request") if n.key == request_id), None)
-                if request_node:
-                    graph.link(request_node.id, obs_node.id, "produced_observation")
+            request_node_id = id_map.get(request_id)
+            if request_node_id:
+                graph.link(request_node_id, obs_node.id, "produced_observation")
 
         for edge in workspace.get("edges") or []:
             if not isinstance(edge, dict):

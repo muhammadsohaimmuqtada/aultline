@@ -89,6 +89,8 @@ class TestPlan:
     maximum_impact: Impact = Impact.ACTIVE_SAFE
     request_budget: int = 10
     requires_multiple_identities: bool = False
+    prerequisites: tuple[str, ...] = ()
+    missing_prerequisites: tuple[str, ...] = ()
 
 
 @dataclass
