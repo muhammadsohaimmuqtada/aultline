@@ -22,6 +22,15 @@ class ExecutionPolicy:
     def evaluate(self, plan: TestPlan, *, scope_declared: bool) -> PolicyDecision:
         if self.require_explicit_scope and not scope_declared:
             return PolicyDecision(False, "explicit authorized scope is required")
+        if plan.missing_prerequisites:
+            return PolicyDecision(
+                False,
+                "missing plan prerequisite(s): " + "; ".join(plan.missing_prerequisites),
+            )
+        if plan.requires_multiple_identities:
+            identities = {step.identity_id for step in plan.steps if step.identity_id}
+            if len(identities) < 2:
+                return PolicyDecision(False, "test plan requires at least two resolved identities")
         if plan.request_budget < 1:
             return PolicyDecision(False, "test plan request budget must be positive")
         if plan.request_budget > self.maximum_requests_per_plan:
